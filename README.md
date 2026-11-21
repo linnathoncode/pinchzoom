@@ -2,6 +2,8 @@
 
 Hold your shortcut keys and scroll to zoom the whole Windows screen around your cursor, like macOS accessibility zoom or a touchpad pinch.
 
+**[Download latest release (pinchzoom.exe)](https://github.com/linnathoncode/pinchzoom/releases/latest)**
+
 ![pinchzoom settings](assets/screenshot.png)
 
 ## Controls
@@ -28,4 +30,4 @@ Requires Windows and the Rust MSVC toolchain:
 cargo build --release
 ```
 
-The compiled binary is at `target\release\PinchZoom.exe`.
+The compiled binary is at `target\release\pinchzoom.exe`.
