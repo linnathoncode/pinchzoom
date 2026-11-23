@@ -4,10 +4,10 @@ mod draw;
 mod win32;
 
 use std::cell::RefCell;
-use std::ffi::c_void;
 use std::ptr;
+use std::time::Instant;
 
-use draw::{paint_window, rect_contains, Layout, CLIENT_H, CLIENT_W, INK, LINE, PAPER};
+use draw::{paint_window, rect_contains, Control, Layout, Palette, CLIENT_H, CLIENT_W};
 use win32::*;
 
 pub const MOD_CTRL: i32 = 1;
@@ -31,6 +31,7 @@ const TIMER_ZOOM: usize = 1;
 const TIMER_ANIM: usize = 2;
 const TIMER_REC: usize = 3;
 const TIMER_WARN: usize = 4;
+const TIMER_SIGNAL: usize = 5;
 
 const MENU_SETTINGS: usize = 1001;
 const MENU_RESET: usize = 1002;
@@ -39,6 +40,8 @@ const MENU_QUIT: usize = 1003;
 pub struct UiState {
     pub hwnd: HWND,
     pub scale: f32,
+    pub dark: bool,
+    pub motion: bool,
     pub hicon: HICON,
     pub cursor_arrow: HCURSOR,
     pub cursor_hand: HCURSOR,
@@ -69,13 +72,14 @@ pub struct UiState {
     pub follow_k: f32,
     pub startup_k: f32,
     pub done_hv: f32,
-    pub pulse_phase: f32,
+    pub signal: Option<(Control, Instant)>,
     pub opacity: f32,
     pub fading_in: bool,
     pub fading_out: bool,
     pub anim_timer_on: bool,
 
     // Hover & press state
+    pub keyboard_focus: Option<Control>,
     pub tracking_mouse: bool,
     pub hover_stage: bool,
     pub hover_action: i32,
@@ -97,6 +101,8 @@ impl UiState {
         Self {
             hwnd: 0,
             scale,
+            dark: false,
+            motion: true,
             hicon: 0,
             cursor_arrow: 0,
             cursor_hand: 0,
@@ -121,11 +127,12 @@ impl UiState {
             follow_k: 1.0,
             startup_k: 0.0,
             done_hv: 0.0,
-            pulse_phase: 0.0,
+            signal: None,
             opacity: 1.0,
             fading_in: false,
             fading_out: false,
             anim_timer_on: false,
+            keyboard_focus: None,
             tracking_mouse: false,
             hover_stage: false,
             hover_action: -1,
@@ -147,6 +154,10 @@ impl UiState {
         } else {
             DEFAULT_MODS
         }
+    }
+
+    pub fn preset(&self) -> i32 {
+        i32::from((self.use_custom && self.custom_mods != 0) || self.recording)
     }
 
     fn update_active(&mut self) {
@@ -537,12 +548,13 @@ unsafe fn show_settings() {
         let was_vis = IsWindowVisible(st.hwnd) != 0 && !st.fading_out;
         st.fading_out = false;
         st.warning = None;
+        st.keyboard_focus = None;
         KillTimer(st.hwnd, TIMER_WARN);
         st.startup_on = startup_enabled();
 
-        if !was_vis {
+        if !was_vis && st.motion {
             st.action_cur = st.action as f32;
-            st.preset_cur = if (st.use_custom && st.custom_mods != 0) || st.recording { 1.0 } else { 0.0 };
+            st.preset_cur = st.preset() as f32;
             st.follow_k = if st.follow_mouse { 1.0 } else { 0.0 };
             st.startup_k = if st.startup_on { 1.0 } else { 0.0 };
             st.opacity = 0.0;
@@ -597,7 +609,7 @@ unsafe fn step_animations(st: &mut UiState) -> Option<HWND> {
     let mut hide_hwnd = None;
 
     if st.fading_in {
-        st.opacity = (st.opacity + 0.14).min(1.0);
+        st.opacity = if st.motion { (st.opacity + 0.14).min(1.0) } else { 1.0 };
         SetLayeredWindowAttributes(st.hwnd, 0, (st.opacity * 255.0).round() as u8, LWA_ALPHA);
         if st.opacity >= 0.995 {
             st.opacity = 1.0;
@@ -606,21 +618,24 @@ unsafe fn step_animations(st: &mut UiState) -> Option<HWND> {
             keep = true;
         }
     } else if st.fading_out {
-        st.opacity = (st.opacity - 0.16).max(0.0);
+        st.opacity = if st.motion { (st.opacity - 0.16).max(0.0) } else { 0.0 };
         SetLayeredWindowAttributes(st.hwnd, 0, (st.opacity * 255.0).round() as u8, LWA_ALPHA);
         if st.opacity <= 0.01 {
             st.fading_out = false;
             st.opacity = 1.0;
             SetLayeredWindowAttributes(st.hwnd, 0, 255, LWA_ALPHA);
+            st.signal = None;
+            KillTimer(st.hwnd, TIMER_SIGNAL);
             hide_hwnd = Some(st.hwnd);
         } else {
             keep = true;
         }
     }
 
+    let motion = st.motion;
     let step_f = |cur: &mut f32, target: f32, speed: f32, active: &mut bool| {
         if (*cur - target).abs() > 0.006 {
-            *cur += (target - *cur) * speed;
+            *cur += (target - *cur) * if motion { speed } else { 1.0 };
             if (*cur - target).abs() <= 0.006 {
                 *cur = target;
             } else {
@@ -629,17 +644,12 @@ unsafe fn step_animations(st: &mut UiState) -> Option<HWND> {
         }
     };
 
-    let preset_target = if (st.use_custom && st.custom_mods != 0) || st.recording { 1.0 } else { 0.0 };
+    let preset_target = st.preset() as f32;
     step_f(&mut st.action_cur, st.action as f32, 0.28, &mut keep);
     step_f(&mut st.preset_cur, preset_target, 0.28, &mut keep);
     step_f(&mut st.follow_k, if st.follow_mouse { 1.0 } else { 0.0 }, 0.30, &mut keep);
     step_f(&mut st.startup_k, if st.startup_on { 1.0 } else { 0.0 }, 0.30, &mut keep);
     step_f(&mut st.done_hv, if st.hover_done { 1.0 } else { 0.0 }, 0.30, &mut keep);
-
-    if st.recording {
-        st.pulse_phase += 0.08;
-        keep = true;
-    }
 
     if !keep && st.anim_timer_on {
         KillTimer(st.hwnd, TIMER_ANIM);
@@ -681,15 +691,86 @@ unsafe fn show_tray_menu() {
     }
 }
 
-unsafe fn apply_dwm_chrome(hwnd: HWND) {
-    let light: i32 = 0;
-    let cap = colorref(PAPER);
-    let txt = colorref(INK);
-    let brd = colorref(LINE);
-    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, (&light as *const i32) as *const c_void, 4);
-    DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, (&cap as *const DWORD) as *const c_void, 4);
-    DwmSetWindowAttribute(hwnd, DWMWA_TEXT_COLOR, (&txt as *const DWORD) as *const c_void, 4);
-    DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, (&brd as *const DWORD) as *const c_void, 4);
+unsafe fn system_dark() -> bool {
+    reg_read_dword(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "AppsUseLightTheme")
+        == Some(0)
+}
+
+unsafe fn motion_enabled() -> bool {
+    let mut enabled: BOOL = 1;
+    SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&mut enabled as *mut BOOL).cast(), 0);
+    enabled != 0
+}
+
+unsafe fn apply_dwm_chrome(hwnd: HWND, dark: bool) {
+    let palette = Palette::new(dark);
+    for (attribute, value) in [
+        (DWMWA_USE_IMMERSIVE_DARK_MODE, u32::from(dark)),
+        (DWMWA_CAPTION_COLOR, colorref(palette.bg)),
+        (DWMWA_TEXT_COLOR, colorref(palette.ink)),
+        (DWMWA_BORDER_COLOR, colorref(palette.line)),
+    ] {
+        DwmSetWindowAttribute(hwnd, attribute, (&value as *const DWORD).cast(), 4);
+    }
+}
+
+unsafe fn show_signal(st: &mut UiState, control: Control) {
+    if st.motion {
+        st.signal = Some((control, Instant::now()));
+        SetTimer(st.hwnd, TIMER_SIGNAL, 42, ptr::null());
+        invalidate(st);
+    }
+}
+
+unsafe fn activate(st: &mut UiState, control: Control) {
+    match control {
+        Control::Shortcut => {
+            if st.recording { stop_recording(st); } else { start_recording(st); }
+        }
+        Control::Action(action) => {
+            if action != st.action {
+                st.action = action;
+                st.warning = None;
+                KillTimer(st.hwnd, TIMER_WARN);
+                save_settings(st);
+            }
+        }
+        Control::Preset(preset) => {
+            st.warning = None;
+            KillTimer(st.hwnd, TIMER_WARN);
+            if preset == 1 && st.custom_mods == 0 {
+                if !st.recording {
+                    start_recording(st);
+                }
+            } else {
+                if st.recording {
+                    stop_recording(st);
+                }
+                let custom = preset == 1;
+                if st.use_custom != custom {
+                    st.use_custom = custom;
+                    save_settings(st);
+                }
+            }
+        }
+        Control::Follow => {
+            st.follow_mouse = !st.follow_mouse;
+            save_settings(st);
+            sync_zoom_timer(st);
+        }
+        Control::Startup => {
+            st.startup_on = !st.startup_on;
+            set_startup(st.startup_on);
+        }
+        Control::Reset => reset_all(st),
+        Control::Done => {
+            fade_out(st);
+            return;
+        }
+    }
+    show_signal(st, control);
+    ensure_anim_timer(st);
+    invalidate(st);
 }
 
 fn seg_hit(r: RectF, s: f32, x: f32, y: f32) -> i32 {
@@ -773,6 +854,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: UINT, w_param: WPARAM, l_par
                 st.hover_startup = nu;
                 st.hover_reset = nr;
                 if changed {
+                    SetCursor(if any_hover(st) { st.cursor_hand } else { st.cursor_arrow });
                     invalidate(st);
                 }
             });
@@ -802,60 +884,29 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: UINT, w_param: WPARAM, l_par
             let y = ((l_param >> 16) & 0xFFFF) as i16 as f32;
             with_state(|st| {
                 let lay = Layout::new(st.scale);
-                if rect_contains(lay.key_stage, x, y) {
-                    if st.recording { stop_recording(st); } else { start_recording(st); }
-                    return;
+                if st.keyboard_focus.take().is_some() {
+                    invalidate(st);
                 }
                 let a = seg_hit(lay.seg_action, lay.s, x, y);
-                if a >= 0 && a != st.action {
-                    st.action = a;
-                    st.warning = None;
-                    KillTimer(hwnd, TIMER_WARN);
-                    save_settings(st);
-                    ensure_anim_timer(st);
-                    invalidate(st);
-                    return;
-                }
                 let p = seg_hit(lay.seg_preset, lay.s, x, y);
-                if p >= 0 {
-                    st.warning = None;
-                    KillTimer(hwnd, TIMER_WARN);
-                    if p == 1 && st.custom_mods == 0 {
-                        if !st.recording { start_recording(st); }
-                    } else {
-                        let want_custom = p == 1;
-                        if st.recording { stop_recording(st); }
-                        if st.use_custom != want_custom {
-                            st.use_custom = want_custom;
-                            save_settings(st);
-                            ensure_anim_timer(st);
-                            invalidate(st);
-                        }
+                let control = if a >= 0 {
+                    Some(Control::Action(a))
+                } else if p >= 0 {
+                    Some(Control::Preset(p))
+                } else {
+                    Control::ORDER.into_iter().find(|&control| {
+                        !matches!(control, Control::Action(_) | Control::Preset(_))
+                            && rect_contains(lay.control_rect(control), x, y)
+                    })
+                };
+                match control {
+                    Some(Control::Done) => {
+                        st.press_done = true;
+                        show_signal(st, Control::Done);
+                        invalidate(st);
                     }
-                    return;
-                }
-                if rect_contains(lay.follow_row, x, y) {
-                    st.follow_mouse = !st.follow_mouse;
-                    save_settings(st);
-                    sync_zoom_timer(st);
-                    ensure_anim_timer(st);
-                    invalidate(st);
-                    return;
-                }
-                if rect_contains(lay.startup_row, x, y) {
-                    st.startup_on = !st.startup_on;
-                    set_startup(st.startup_on);
-                    ensure_anim_timer(st);
-                    invalidate(st);
-                    return;
-                }
-                if rect_contains(lay.reset_link, x, y) {
-                    reset_all(st);
-                    return;
-                }
-                if rect_contains(lay.done_btn, x, y) {
-                    st.press_done = true;
-                    invalidate(st);
+                    Some(control) => activate(st, control),
+                    None => {}
                 }
             });
             0
@@ -881,10 +932,44 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: UINT, w_param: WPARAM, l_par
             with_state(|st| {
                 if vk == VK_ESCAPE {
                     if st.recording { stop_recording(st); } else { fade_out(st); }
-                } else if vk == VK_RETURN && !st.recording {
-                    fade_out(st);
+                } else if !st.recording && vk == VK_TAB {
+                    let order = Control::ORDER;
+                    let previous = st.keyboard_focus.and_then(|focus| order.iter().position(|c| *c == focus));
+                    let reverse = key_down(VK_SHIFT);
+                    let next = match previous {
+                        Some(index) if reverse => (index + order.len() - 1) % order.len(),
+                        Some(index) => (index + 1) % order.len(),
+                        None if reverse => order.len() - 1,
+                        None => 0,
+                    };
+                    st.keyboard_focus = Some(order[next]);
+                    invalidate(st);
+                } else if !st.recording && (vk == VK_RETURN || vk == VK_SPACE) && l_param & (1 << 30) == 0 {
+                    if let Some(control) = st.keyboard_focus {
+                        activate(st, control);
+                    } else if vk == VK_RETURN {
+                        fade_out(st);
+                    }
                 }
             });
+            0
+        }
+        WM_SETTINGCHANGE | WM_THEMECHANGED => {
+            let dark = system_dark();
+            let changed = with_state(|st| {
+                let changed = st.dark != dark;
+                st.dark = dark;
+                st.motion = motion_enabled();
+                if !st.motion {
+                    st.signal = None;
+                    KillTimer(hwnd, TIMER_SIGNAL);
+                }
+                invalidate(st);
+                changed
+            });
+            if changed {
+                apply_dwm_chrome(hwnd, dark);
+            }
             0
         }
         WM_TIMER => {
@@ -909,7 +994,16 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: UINT, w_param: WPARAM, l_par
                     }
                 }
                 TIMER_ANIM => hide_hwnd = step_animations(st),
+                TIMER_SIGNAL => {
+                    if st.signal.is_some_and(|(_, start)| start.elapsed().as_millis() >= 530) {
+                        st.signal = None;
+                        KillTimer(hwnd, TIMER_SIGNAL);
+                    }
+                    invalidate(st);
+                }
                 TIMER_REC => {
+                    let previous = st.rec_peak;
+                    let wave_was_visible = st.motion && draw::recording_wave(st.rec_ticks).is_some();
                     let m = current_mods();
                     st.rec_ticks += 1;
                     if m != 0 {
@@ -929,9 +1023,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: UINT, w_param: WPARAM, l_par
                         invalidate(st);
                         return;
                     }
+                    let wave_is_visible = st.motion && draw::recording_wave(st.rec_ticks).is_some();
                     if st.rec_ticks > 300 {
                         stop_recording(st);
-                    } else {
+                    } else if previous != st.rec_peak || wave_was_visible || wave_is_visible {
                         invalidate(st);
                     }
                 }
@@ -1067,11 +1162,13 @@ fn main() {
 
         let mut init_state = UiState::new(scale);
         init_state.taskbar_created_msg = taskbar_created_msg;
+        init_state.dark = system_dark();
+        init_state.motion = motion_enabled();
         load_settings(&mut init_state);
         ensure_startup_default();
         init_state.startup_on = startup_enabled();
         init_state.action_cur = init_state.action as f32;
-        init_state.preset_cur = if init_state.use_custom && init_state.custom_mods != 0 { 1.0 } else { 0.0 };
+        init_state.preset_cur = init_state.preset() as f32;
         init_state.follow_k = if init_state.follow_mouse { 1.0 } else { 0.0 };
         init_state.startup_k = if init_state.startup_on { 1.0 } else { 0.0 };
         init_state.hicon = draw::make_icon((32.0 * scale).round() as i32);
@@ -1128,7 +1225,7 @@ fn main() {
             ptr::null_mut(),
         );
         SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
-        apply_dwm_chrome(hwnd);
+        apply_dwm_chrome(hwnd, with_state(|st| st.dark));
 
         let hicon = with_state(|st| {
             st.hwnd = hwnd;

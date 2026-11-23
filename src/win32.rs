@@ -31,6 +31,8 @@ pub const WM_DESTROY: UINT = 0x0002;
 pub const WM_PAINT: UINT = 0x000F;
 pub const WM_CLOSE: UINT = 0x0010;
 pub const WM_ERASEBKGND: UINT = 0x0014;
+pub const WM_SETTINGCHANGE: UINT = 0x001A;
+pub const WM_THEMECHANGED: UINT = 0x031A;
 pub const WM_SETCURSOR: UINT = 0x0020;
 pub const WM_SETICON: UINT = 0x0080;
 pub const WM_KEYDOWN: UINT = 0x0100;
@@ -70,6 +72,8 @@ pub const IDC_ARROW: usize = 32512;
 pub const IDC_HAND: usize = 32649;
 pub const HTCLIENT: isize = 1;
 
+pub const VK_TAB: i32 = 0x09;
+pub const VK_SPACE: i32 = 0x20;
 pub const VK_RETURN: i32 = 0x0D;
 pub const VK_SHIFT: i32 = 0x10;
 pub const VK_CONTROL: i32 = 0x11;
@@ -85,6 +89,7 @@ pub const SM_CXSCREEN: i32 = 0;
 pub const SM_CYSCREEN: i32 = 1;
 pub const LOGPIXELSX: i32 = 88;
 pub const SRCCOPY: DWORD = 0x00CC0020;
+pub const SPI_GETCLIENTAREAANIMATION: UINT = 0x1042;
 pub const TME_LEAVE: DWORD = 0x00000002;
 
 pub const NIM_ADD: DWORD = 0x00000000;
@@ -240,6 +245,7 @@ extern "system" {
     pub fn SetWindowsHookExW(id: i32, lpfn: HookProc, hmod: HMODULE, tid: DWORD) -> HHOOK;
     pub fn CallNextHookEx(hhk: HHOOK, nCode: i32, wParam: WPARAM, lParam: LPARAM) -> LRESULT;
     pub fn UnhookWindowsHookEx(hhk: HHOOK) -> BOOL;
+    pub fn SystemParametersInfoW(action: UINT, param: UINT, value: *mut c_void, flags: UINT) -> BOOL;
     pub fn GetAsyncKeyState(vKey: i32) -> i16;
     pub fn GetCursorPos(lpPoint: *mut POINT) -> BOOL;
     pub fn keybd_event(bVk: u8, bScan: u8, dwFlags: DWORD, dwExtraInfo: usize);

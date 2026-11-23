@@ -4,26 +4,98 @@ use std::ptr;
 use crate::win32::*;
 use crate::{format_reset_summary, UiState, MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN};
 
-pub const PAPER: u32 = 0xFFF4EFE4;
-pub const CARD: u32 = 0xFFFCF9F2;
-pub const SUBTLE: u32 = 0xFFECE5D5;
-pub const LINE: u32 = 0xFFDDD5C3;
-pub const LINE_HOVER: u32 = 0xFFBEB49E;
-pub const INK: u32 = 0xFF23211D;
-pub const MUTED: u32 = 0xFF6B6559;
-pub const ACCENT: u32 = 0xFF23211D;
-pub const ON_ACCENT: u32 = 0xFFFAF7F0;
-pub const KEY_FACE: u32 = 0xFFFFFFFF;
-pub const KEY_SHADOW: u32 = 0xFFD4CBB7;
-pub const FOCUS_BLUE: u32 = 0xFF2457C5;
-pub const FOCUS_BG: u32 = 0xFFEFF4FC;
-pub const FOCUS_LINE: u32 = 0xFFA6C0F0;
-pub const ERROR_RED: u32 = 0xFFB43E2B;
-pub const ERROR_BG: u32 = 0xFFFDF1EE;
-pub const ERROR_LINE: u32 = 0xFFE8B4AA;
+#[derive(Clone, Copy)]
+pub struct Palette {
+    pub bg: u32,
+    pub sub: u32,
+    hover: u32,
+    pub line: u32,
+    strong: u32,
+    pub ink: u32,
+    muted: u32,
+    cta: u32,
+    accent: u32,
+    on_cta: u32,
+    error: u32,
+    signal: u32,
+    dark: bool,
+}
 
-pub const CLIENT_W: f32 = 368.0;
-pub const CLIENT_H: f32 = 478.0;
+impl Palette {
+    pub fn new(dark: bool) -> Self {
+        if dark {
+            Self {
+                bg: 0xFF131518,
+                sub: 0xFF191C20,
+                hover: 0xFF22262C,
+                line: 0xFF252930,
+                strong: 0xFF343A44,
+                ink: 0xFFF0EFEA,
+                muted: 0xFF9EA3AD,
+                cta: 0xFF2E4A8F,
+                accent: 0xFF4B72C4,
+                on_cta: 0xFFF6F7F8,
+                error: 0xFFDF6B62,
+                signal: 0xFFFFC391,
+                dark,
+            }
+        } else {
+            Self {
+                bg: 0xFFFCFBF9,
+                sub: 0xFFF4F2EC,
+                hover: 0xFFEAE7DF,
+                line: 0xFFE5E1D8,
+                strong: 0xFFD4CFC4,
+                ink: 0xFF181A1F,
+                muted: 0xFF515661,
+                cta: 0xFF3757A6,
+                accent: 0xFF3757A6,
+                on_cta: 0xFFFCFBF9,
+                error: 0xFFB8423A,
+                signal: 0xFF87502F,
+                dark,
+            }
+        }
+    }
+
+    fn button(self, strength: f32) -> u32 {
+        mix(
+            self.cta,
+            if self.dark { self.accent } else { self.ink },
+            strength,
+        )
+    }
+}
+
+pub const CLIENT_W: f32 = 388.0;
+pub const CLIENT_H: f32 = 471.0;
+const SETTINGS_INSET: f32 = 12.0;
+const BUTTON_RADIUS: f32 = 9.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Control {
+    Shortcut,
+    Action(i32),
+    Preset(i32),
+    Follow,
+    Startup,
+    Reset,
+    Done,
+}
+
+impl Control {
+    pub const ORDER: [Self; 9] = [
+        Self::Shortcut,
+        Self::Action(0),
+        Self::Action(1),
+        Self::Preset(0),
+        Self::Preset(1),
+        Self::Follow,
+        Self::Startup,
+        Self::Reset,
+        Self::Done,
+    ];
+}
 
 pub fn mix(a: u32, b: u32, t: f32) -> u32 {
     let t = t.clamp(0.0, 1.0);
@@ -63,19 +135,111 @@ pub struct Layout {
 impl Layout {
     pub fn new(s: f32) -> Self {
         let m = 20.0 * s;
-        let w = 328.0 * s;
+        let w = CLIENT_W * s - 2.0 * m;
         Self {
             s,
-            key_stage: RectF { x: m, y: 10.0 * s, w, h: 128.0 * s },
-            cap_action: RectF { x: m, y: 154.0 * s, w, h: 18.0 * s },
-            seg_action: RectF { x: m, y: 178.0 * s, w, h: 42.0 * s },
-            cap_preset: RectF { x: m, y: 236.0 * s, w, h: 18.0 * s },
-            seg_preset: RectF { x: m, y: 260.0 * s, w, h: 42.0 * s },
-            divider_y: 320.0 * s,
-            follow_row: RectF { x: m - 4.0 * s, y: 330.0 * s, w: w + 8.0 * s, h: 38.0 * s },
-            startup_row: RectF { x: m - 4.0 * s, y: 370.0 * s, w: w + 8.0 * s, h: 38.0 * s },
-            reset_link: RectF { x: m, y: 422.0 * s, w: 140.0 * s, h: 36.0 * s },
-            done_btn: RectF { x: m + w - 104.0 * s, y: 422.0 * s, w: 104.0 * s, h: 36.0 * s },
+            key_stage: RectF {
+                x: m,
+                y: 16.0 * s,
+                w,
+                h: 134.0 * s,
+            },
+            cap_action: RectF {
+                x: m,
+                y: 163.0 * s,
+                w,
+                h: 22.0 * s,
+            },
+            seg_action: RectF {
+                x: m,
+                y: 188.0 * s,
+                w,
+                h: 39.0 * s,
+            },
+            cap_preset: RectF {
+                x: m,
+                y: 238.0 * s,
+                w,
+                h: 22.0 * s,
+            },
+            seg_preset: RectF {
+                x: m,
+                y: 263.0 * s,
+                w,
+                h: 39.0 * s,
+            },
+            divider_y: 319.0 * s,
+            follow_row: RectF {
+                x: m,
+                y: 328.0 * s,
+                w,
+                h: 37.0 * s,
+            },
+            startup_row: RectF {
+                x: m,
+                y: 369.0 * s,
+                w,
+                h: 37.0 * s,
+            },
+            reset_link: RectF {
+                x: m,
+                y: 420.0 * s,
+                w: 140.0 * s,
+                h: 36.0 * s,
+            },
+            done_btn: RectF {
+                x: m + w - 100.0 * s,
+                y: 420.0 * s,
+                w: 100.0 * s,
+                h: 36.0 * s,
+            },
+        }
+    }
+
+    pub fn control_rect(&self, control: Control) -> RectF {
+        match control {
+            Control::Shortcut => self.key_stage,
+            Control::Action(index) => self.segment(self.seg_action, index as f32),
+            Control::Preset(index) => self.segment(self.seg_preset, index as f32),
+            Control::Follow => self.follow_row,
+            Control::Startup => self.startup_row,
+            Control::Reset => self.reset_link,
+            Control::Done => self.done_btn,
+        }
+    }
+
+    fn button_rect(&self, control: Control) -> RectF {
+        let bounds = self.control_rect(control);
+        let s = self.s;
+        match control {
+            Control::Shortcut => RectF {
+                x: bounds.x + bounds.w - 88.0 * s,
+                y: bounds.y + 10.0 * s,
+                w: 76.0 * s,
+                h: 25.0 * s,
+            },
+            Control::Follow | Control::Startup => {
+                let w = 40.0 * s;
+                let h = 22.0 * s;
+                RectF {
+                    x: bounds.x + bounds.w - w - SETTINGS_INSET * s,
+                    y: bounds.y + (bounds.h - h) * 0.5,
+                    w,
+                    h,
+                }
+            }
+            _ => bounds,
+        }
+    }
+
+    fn segment(&self, row: RectF, index: f32) -> RectF {
+        let pad = 4.0 * self.s;
+        let w = (row.w - 2.0 * pad) * 0.5;
+        RectF {
+            x: row.x + pad + index * w,
+            y: row.y + pad,
+            w,
+            h: row.h - 2.0 * pad,
         }
     }
 }
@@ -182,15 +346,53 @@ unsafe fn draw_text(
     h_align: i32,
 ) {
     let (fam, font) = make_font(pt, semi, underline);
+    paint_text(g, text, font, color, rect, h_align);
+    GdipDeleteFont(font);
+    GdipDeleteFontFamily(fam);
+}
+
+unsafe fn paint_text(
+    g: *mut c_void,
+    text: &str,
+    font: *mut c_void,
+    color: u32,
+    rect: RectF,
+    h_align: i32,
+) {
     let fmt = make_fmt(h_align, 1);
     let mut brush = ptr::null_mut();
     GdipCreateSolidFill(color, &mut brush);
     let wtext: Vec<u16> = text.encode_utf16().collect();
-    GdipDrawString(g, wtext.as_ptr(), wtext.len() as i32, font, &rect, fmt, brush);
+    GdipDrawString(
+        g,
+        wtext.as_ptr(),
+        wtext.len() as i32,
+        font,
+        &rect,
+        fmt,
+        brush,
+    );
     GdipDeleteBrush(brush);
     GdipDeleteStringFormat(fmt);
-    GdipDeleteFont(font);
-    GdipDeleteFontFamily(fam);
+}
+
+unsafe fn mono_font(pt: f32) -> (*mut c_void, *mut c_void) {
+    let mut fam = ptr::null_mut();
+    let name = wide("Consolas");
+    GdipCreateFontFamilyFromName(name.as_ptr(), ptr::null_mut(), &mut fam);
+    if fam.is_null() {
+        return make_font(pt, false, false);
+    }
+    let mut font = ptr::null_mut();
+    GdipCreateFont(fam, pt, 0, 3, &mut font);
+    (fam, font)
+}
+
+unsafe fn hairline(g: *mut c_void, x: f32, right: f32, y: f32, color: u32) {
+    let mut pen = ptr::null_mut();
+    GdipCreatePen1(color, 1.0, 2, &mut pen);
+    GdipDrawLine(g, pen, x, y, right, y);
+    GdipDeletePen(pen);
 }
 
 unsafe fn draw_mouse(g: *mut c_void, x: f32, y: f32, h: f32, fg: u32, wheel: u32) -> f32 {
@@ -302,8 +504,8 @@ pub unsafe fn make_icon(size: i32) -> HICON {
     GdipAddPathEllipse(glow_path, sz * 0.5 - gr, sz * 0.5 - gr, gr * 2.0, gr * 2.0);
     let mut pgb = ptr::null_mut();
     GdipCreatePathGradientFromPath(glow_path, &mut pgb);
-    GdipSetPathGradientCenterColor(pgb, 0x2A2563EB);
-    let sur = [0x007C3AEDu32];
+    GdipSetPathGradientCenterColor(pgb, 0x293757A6);
+    let sur = [0x003757A6u32];
     let mut cnt = 1i32;
     GdipSetPathGradientSurroundColorsWithCount(pgb, sur.as_ptr(), &mut cnt);
     GdipFillPath(g, pgb, glow_path);
@@ -314,8 +516,8 @@ pub unsafe fn make_icon(size: i32) -> HICON {
     let gp1 = PointF { x: 20.0 * k, y: 30.0 * k };
     let gp2 = PointF { x: 108.0 * k, y: 98.0 * k };
     let mut grad = ptr::null_mut();
-    GdipCreateLineBrush(&gp1, &gp2, 0xFF0EA5E9, 0xFF7C3AED, 0, &mut grad);
-    let colors = [0xFF0EA5E9u32, 0xFF2563EBu32, 0xFF7C3AEDu32];
+    GdipCreateLineBrush(&gp1, &gp2, 0xFF3B82A6, 0xFF5D4B9E, 0, &mut grad);
+    let colors = [0xFF3B82A6u32, 0xFF3757A6u32, 0xFF5D4B9Eu32];
     let pos = [0.0f32, 0.52f32, 1.0f32];
     GdipSetLinePresetBlend(grad, colors.as_ptr(), pos.as_ptr(), 3);
 
@@ -344,7 +546,7 @@ pub unsafe fn make_icon(size: i32) -> HICON {
     GdipRestoreGraphics(g, state);
 
     let mut rim = ptr::null_mut();
-    GdipCreatePen1(0xFFD8D0BE, (1.5 * k).max(1.0), 2, &mut rim);
+    GdipCreatePen1(0xFFD8D0BE, (2.2 * k).max(0.6), 2, &mut rim);
     GdipDrawPath(g, rim, clip);
     GdipDeletePen(rim);
     GdipDeletePath(clip);
@@ -364,64 +566,102 @@ pub unsafe fn paint_window(hdc: HDC, w: i32, h: i32, ui: &UiState) {
     let mut g = ptr::null_mut();
     GdipCreateFromHDC(mem_dc, &mut g);
     set_smooth(g);
-    GdipGraphicsClear(g, PAPER);
+    let p = Palette::new(ui.dark);
+    GdipGraphicsClear(g, p.bg);
 
     let lay = Layout::new(ui.scale);
-    paint_key_stage(g, &lay, ui);
-
-    draw_text(
-        g,
-        "Zoom with",
-        8.5,
-        true,
-        false,
-        MUTED,
-        RectF { x: lay.cap_action.x + 2.0 * lay.s, ..lay.cap_action },
-        0,
-    );
-    paint_seg_action(g, &lay, ui);
-
+    paint_key_stage(g, &lay, ui, p);
+    draw_text(g, "Zoom with", 9.2, true, false, p.ink, lay.cap_action, 0);
+    paint_seg_action(g, &lay, ui, p);
     draw_text(
         g,
         "Modifier keys",
-        8.5,
+        9.2,
         true,
         false,
-        MUTED,
-        RectF { x: lay.cap_preset.x + 2.0 * lay.s, ..lay.cap_preset },
+        p.ink,
+        lay.cap_preset,
         0,
     );
-    paint_seg_preset(g, &lay, ui);
+    paint_seg_preset(g, &lay, ui, p);
 
-    // Hairline divider
-    let mut div_pen = ptr::null_mut();
-    GdipCreatePen1(LINE, 1.0, 2, &mut div_pen);
-    GdipDrawLine(g, div_pen, 20.0 * lay.s, lay.divider_y, (w as f32) - 20.0 * lay.s, lay.divider_y);
-    GdipDeletePen(div_pen);
+    hairline(
+        g,
+        lay.key_stage.x,
+        lay.key_stage.x + lay.key_stage.w,
+        lay.divider_y,
+        p.line,
+    );
+    paint_toggle_row(
+        g,
+        &lay,
+        ui,
+        Control::Follow,
+        "Follow mouse",
+        ui.follow_k,
+        ui.hover_follow,
+        p,
+    );
+    paint_toggle_row(
+        g,
+        &lay,
+        ui,
+        Control::Startup,
+        "Start with Windows",
+        ui.startup_k,
+        ui.hover_startup,
+        p,
+    );
 
-    paint_toggle_row(g, lay.follow_row, lay.s, "Follow mouse", ui.follow_k, ui.hover_follow);
-    paint_toggle_row(g, lay.startup_row, lay.s, "Start with Windows", ui.startup_k, ui.hover_startup);
-
-    // Reset to defaults link
+    paint_control_signal(g, &lay, ui, Control::Reset, p);
+    if ui.hover_reset {
+        fill_round(g, lay.reset_link, BUTTON_RADIUS * lay.s, p.hover);
+    }
     draw_text(
         g,
         "Reset to defaults",
         9.0,
         true,
-        ui.hover_reset,
-        if ui.hover_reset { INK } else { MUTED },
-        RectF { x: lay.reset_link.x + 2.0 * lay.s, ..lay.reset_link },
+        false,
+        p.ink,
+        RectF {
+            x: lay.reset_link.x + SETTINGS_INSET * lay.s,
+            w: lay.reset_link.w - SETTINGS_INSET * lay.s,
+            ..lay.reset_link
+        },
         0,
     );
 
-    // Done primary button
-    let btn_fill = if ui.press_done {
-        0xFF141310
+    let strength = if ui.press_done {
+        0.35
     } else {
-        mix(ACCENT, 0xFF3B3730, ui.done_hv)
+        0.24 * ui.done_hv
     };
-    fill_round(g, lay.done_btn, 9.0 * lay.s, btn_fill);
-    draw_text(g, "Done", 9.5, true, false, ON_ACCENT, lay.done_btn, 1);
+    let button = if ui.press_done {
+        inset(lay.done_btn, 1.1 * lay.s)
+    } else {
+        lay.done_btn
+    };
+    paint_control_signal(g, &lay, ui, Control::Done, p);
+    fill_round(g, button, BUTTON_RADIUS * lay.s, p.button(strength));
+    draw_text(g, "Done", 9.5, true, false, p.on_cta, button, 1);
+
+    if let Some(control) = ui.keyboard_focus {
+        let rect = inset(lay.button_rect(control), 2.0 * lay.s);
+        let color = if matches!(control, Control::Done)
+            || matches!(control, Control::Action(i) if i == ui.action)
+            || matches!(control, Control::Preset(i) if i == ui.preset())
+            || (control == Control::Follow && ui.follow_mouse)
+            || (control == Control::Startup && ui.startup_on)
+        {
+            p.on_cta
+        } else {
+            p.accent
+        };
+        stroke_round(
+            g, rect, (BUTTON_RADIUS - 2.0) * lay.s, color, 1.2 * lay.s, false,
+        );
+    }
 
     GdipDeleteGraphics(g);
     BitBlt(hdc, 0, 0, w, h, mem_dc, 0, 0, SRCCOPY);
@@ -430,174 +670,200 @@ pub unsafe fn paint_window(hdc: HDC, w: i32, h: i32, ui: &UiState) {
     DeleteDC(mem_dc);
 }
 
-unsafe fn paint_key_stage(g: *mut c_void, lay: &Layout, ui: &UiState) {
+fn inset(r: RectF, amount: f32) -> RectF {
+    RectF {
+        x: r.x + amount,
+        y: r.y + amount,
+        w: r.w - 2.0 * amount,
+        h: r.h - 2.0 * amount,
+    }
+}
+
+unsafe fn paint_control_signal(
+    g: *mut c_void,
+    lay: &Layout,
+    ui: &UiState,
+    control: Control,
+    p: Palette,
+) {
+    let Some((source, began)) = ui.signal else {
+        return;
+    };
+    if source != control {
+        return;
+    }
+    let t = began.elapsed().as_secs_f32() / 0.53;
+    if t >= 1.0 {
+        return;
+    }
     let s = lay.s;
-    let r = RectF {
-        x: lay.key_stage.x + 0.5,
-        y: lay.key_stage.y + 0.5,
-        w: lay.key_stage.w - 1.0,
-        h: lay.key_stage.h - 1.0,
-    };
-    let rad = 12.0 * s;
-    let has_warn = !ui.recording && ui.warning.is_some();
-
-    let bg = if ui.recording { FOCUS_BG } else { CARD };
-    let border = if ui.recording {
-        FOCUS_BLUE
-    } else if has_warn {
-        ERROR_LINE
-    } else if ui.hover_stage {
-        LINE_HOVER
-    } else {
-        LINE
-    };
-    let border_w = if ui.recording { 1.5 } else { 1.0 };
-
-    let clip = round_path(r, rad);
-    let mut bg_b = ptr::null_mut();
-    GdipCreateSolidFill(bg, &mut bg_b);
-    GdipFillPath(g, bg_b, clip);
-    GdipDeleteBrush(bg_b);
-
-    let mut st = 0u32;
-    GdipSaveGraphics(g, &mut st);
-    GdipSetClipPath(g, clip, 0);
-
-    let foot_h = 32.0 * s;
-    let foot_y = r.y + r.h - foot_h;
-    let foot_bg = if ui.recording {
-        mix(FOCUS_BG, FOCUS_LINE, 0.22)
-    } else if has_warn {
-        ERROR_BG
-    } else {
-        SUBTLE
-    };
-    let foot_rule = if ui.recording {
-        FOCUS_LINE
-    } else if has_warn {
-        ERROR_LINE
-    } else {
-        LINE
-    };
-
-    let mut fb = ptr::null_mut();
-    GdipCreateSolidFill(foot_bg, &mut fb);
-    GdipFillRectangle(g, fb, r.x, foot_y, r.w, foot_h);
-    GdipDeleteBrush(fb);
-    let mut fp = ptr::null_mut();
-    GdipCreatePen1(foot_rule, 1.0, 2, &mut fp);
-    GdipDrawLine(g, fp, r.x, foot_y, r.x + r.w, foot_y);
-    GdipDeletePen(fp);
-
-    // Top bar inside card
-    let hdr_x = r.x + 14.0 * s;
-    let hdr_y = r.y + 8.0 * s;
-    let hdr_h = 20.0 * s;
-    if ui.recording {
-        let alpha = (255.0 * (0.45 + 0.55 * (0.5 + 0.5 * ui.pulse_phase.sin()))) as u8;
-        let dot_d = 7.0 * s;
-        let mut db = ptr::null_mut();
-        GdipCreateSolidFill(with_alpha(FOCUS_BLUE, alpha), &mut db);
-        GdipFillEllipse(g, db, hdr_x, hdr_y + (hdr_h - dot_d) * 0.5, dot_d, dot_d);
-        GdipDeleteBrush(db);
-        draw_text(
-            g,
-            "RECORDING",
-            7.8,
-            true,
-            false,
-            FOCUS_BLUE,
-            RectF { x: hdr_x + dot_d + 6.0 * s, y: hdr_y, w: 140.0 * s, h: hdr_h },
-            0,
-        );
-    } else {
-        draw_text(
-            g,
-            "ACTIVE SHORTCUT",
-            7.8,
-            true,
-            false,
-            MUTED,
-            RectF { x: hdr_x, y: hdr_y, w: 160.0 * s, h: hdr_h },
-            0,
-        );
-    }
-
-    // Top-right action pill
-    let is_custom = ui.use_custom && ui.custom_mods != 0;
-    let pill_text = if ui.recording {
-        "Cancel"
-    } else if is_custom {
-        "Edit keys"
-    } else {
-        "Customize"
-    };
-    let (pfam, pfont) = make_font(8.0, true, false);
-    let tw = measure_width(g, pill_text, pfont);
-    GdipDeleteFont(pfont);
-    GdipDeleteFontFamily(pfam);
-    let pw = tw + 16.0 * s;
-    let ph = 20.0 * s;
-    let pr = RectF { x: r.x + r.w - 12.0 * s - pw, y: hdr_y, w: pw, h: ph };
-    let p_bg = if ui.recording {
-        if ui.hover_stage { mix(FOCUS_BLUE, 0xFFFFFFFF, 0.78) } else { 0xFFDCE8FA }
-    } else if ui.hover_stage {
-        ACCENT
-    } else {
-        SUBTLE
-    };
-    let p_fg = if ui.recording {
-        FOCUS_BLUE
-    } else if ui.hover_stage {
-        ON_ACCENT
-    } else {
-        INK
-    };
-    fill_round(g, pr, ph * 0.5, p_bg);
-    draw_text(g, pill_text, 8.0, true, false, p_fg, pr, 1);
-
-    // Keycaps centered in stage
-    let stage_top = r.y + 34.0 * s;
-    let stage_bot = foot_y - 4.0 * s;
-    let cy = (stage_top + stage_bot) * 0.5;
-    paint_keycaps(g, r, cy, s, ui);
-
-    // Bottom strip text
-    let foot_rect = RectF { x: r.x + 12.0 * s, y: foot_y, w: r.w - 24.0 * s, h: foot_h };
-    if ui.recording {
-        let (hint, col) = if ui.rec_peak == MOD_SHIFT {
-            ("Shift alone clashes with horizontal scroll. Add another key.", ERROR_RED)
-        } else if ui.rec_peak != 0 {
-            ("Release keys to save  \u{00b7}  keep holding to add more", FOCUS_BLUE)
-        } else {
-            ("Hold modifier keys, then release  \u{00b7}  Esc to cancel", FOCUS_BLUE)
+    let r = lay.button_rect(control);
+    let travel = (2.0 + 9.0 * (1.0 - (1.0 - t).powi(3))) * s;
+    let alpha = ((t * 16.0).min(1.0) * (1.0 - t) * 225.0) as u8;
+    let (fam, font) = mono_font(8.0);
+    for (i, (x, y)) in [
+        (0.16, -1.0),
+        (0.62, -1.0),
+        (1.0, -0.5),
+        (1.0, 0.65),
+        (-0.16, 1.0),
+        (-0.62, 1.0),
+        (-1.0, 0.5),
+        (-1.0, -0.65),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let point = PointF {
+            x: r.x + r.w * 0.5 + x * (r.w * 0.5 + travel),
+            y: r.y + r.h * 0.5 + y * (r.h * 0.5 + travel),
         };
-        draw_text(g, hint, 8.2, false, false, col, foot_rect, 1);
-    } else if let Some(ref warn) = ui.warning {
-        draw_text(g, warn, 8.2, true, false, ERROR_RED, foot_rect, 1);
-    } else {
-        let prefix = "Reset zoom: ";
-        let combo = format_reset_summary(ui.active_mods(), ui.action);
-        let (f1fam, f1) = make_font(8.5, false, false);
-        let (f2fam, f2) = make_font(8.5, true, false);
-        let w1 = measure_width(g, prefix, f1);
-        let w2 = measure_width(g, &combo, f2);
-        GdipDeleteFont(f1);
-        GdipDeleteFontFamily(f1fam);
-        GdipDeleteFont(f2);
-        GdipDeleteFontFamily(f2fam);
-        let sx = r.x + (r.w - (w1 + w2)) * 0.5;
-        draw_text(g, prefix, 8.5, false, false, MUTED, RectF { x: sx, y: foot_y, w: w1 + 4.0 * s, h: foot_h }, 0);
-        draw_text(g, &combo, 8.5, true, false, INK, RectF { x: sx + w1, y: foot_y, w: w2 + 6.0 * s, h: foot_h }, 0);
+        let mark = if i % 2 == 0 { "+" } else { "." };
+        paint_text(
+            g,
+            mark,
+            font,
+            with_alpha(p.signal, alpha),
+            RectF {
+                x: point.x - 6.0 * s,
+                y: point.y - 7.0 * s,
+                w: 12.0 * s,
+                h: 14.0 * s,
+            },
+            1,
+        );
+    }
+    GdipDeleteFont(font);
+    GdipDeleteFontFamily(fam);
+}
+
+pub fn recording_wave(tick: i32) -> Option<f32> {
+    const WAVE_TICKS: i32 = 32;
+    const REST_TICKS: i32 = 22;
+    let phase = tick % (WAVE_TICKS + REST_TICKS);
+    (phase < WAVE_TICKS).then(|| phase as f32 / (WAVE_TICKS - 1) as f32)
+}
+
+unsafe fn paint_recording_wave(g: *mut c_void, lane: RectF, progress: f32, color: u32) {
+    const MARKS: [&str; 11] = [".", "+", ".", "*", "+", ".", "*", ".", "+", "*", "."];
+    const RADIUS: f32 = 2.6;
+    let width = lane.w / MARKS.len() as f32;
+    let travel = (MARKS.len() - 1) as f32 + 2.0 * RADIUS;
+    let crest = progress * travel - RADIUS;
+    let (family, font) = mono_font(8.0);
+
+    for (column, mark) in MARKS.into_iter().enumerate() {
+        let strength = (1.0 - (column as f32 - crest).abs() / RADIUS).clamp(0.0, 1.0);
+        let fade = strength * strength * (3.0 - 2.0 * strength);
+        let alpha = (fade * 255.0).round() as u8;
+        if alpha == 0 {
+            continue;
+        }
+
+        paint_text(
+            g,
+            mark,
+            font,
+            with_alpha(color, alpha),
+            RectF {
+                x: lane.x + column as f32 * width,
+                w: width,
+                ..lane
+            },
+            1,
+        );
     }
 
-    GdipRestoreGraphics(g, st);
+    GdipDeleteFont(font);
+    GdipDeleteFontFamily(family);
+}
 
-    let mut bp = ptr::null_mut();
-    GdipCreatePen1(border, border_w, 2, &mut bp);
-    GdipDrawPath(g, bp, clip);
-    GdipDeletePen(bp);
-    GdipDeletePath(clip);
+unsafe fn paint_key_stage(g: *mut c_void, lay: &Layout, ui: &UiState, p: Palette) {
+    let s = lay.s;
+    let r = lay.key_stage;
+    fill_round(g, r, 11.0 * s, p.sub);
+    let border = if ui.recording {
+        p.accent
+    } else if ui.hover_stage {
+        p.strong
+    } else {
+        p.line
+    };
+    stroke_round(g, inset(r, 0.5), 11.0 * s, border, s, false);
+
+    let label = RectF {
+        x: r.x + 13.0 * s,
+        y: r.y + 7.0 * s,
+        w: 198.0 * s,
+        h: 30.0 * s,
+    };
+    draw_text(
+        g,
+        if ui.recording {
+            "Record modifier keys"
+        } else {
+            "Zoom shortcut"
+        },
+        10.5,
+        true,
+        false,
+        p.ink,
+        label,
+        0,
+    );
+    if ui.recording && ui.motion {
+        if let Some(progress) = recording_wave(ui.rec_ticks) {
+            let lane = RectF {
+                x: r.x + r.w - 168.0 * s,
+                y: label.y,
+                w: 70.0 * s,
+                h: label.h,
+            };
+            paint_recording_wave(g, lane, progress, p.signal);
+        }
+    }
+
+    let button = lay.button_rect(Control::Shortcut);
+    paint_control_signal(g, lay, ui, Control::Shortcut, p);
+    if ui.hover_stage {
+        fill_round(g, button, BUTTON_RADIUS * s, p.hover);
+    }
+    draw_text(
+        g,
+        if ui.recording { "Cancel" } else { "Edit keys" },
+        9.0,
+        true,
+        false,
+        p.ink,
+        button,
+        1,
+    );
+
+    paint_keycaps(g, r, r.y + 68.0 * s, s, ui, p);
+    let foot_y = r.y + r.h - 32.0 * s;
+    hairline(g, r.x + 13.0 * s, r.x + r.w - 13.0 * s, foot_y, p.line);
+    let foot = RectF {
+        x: r.x + 13.0 * s,
+        y: foot_y,
+        w: r.w - 26.0 * s,
+        h: 31.0 * s,
+    };
+    let (hint, color) = if ui.recording && ui.rec_peak == MOD_SHIFT {
+        ("Add another modifier to Shift.".into(), p.error)
+    } else if ui.recording {
+        ("Release the keys to save. Esc cancels.".into(), p.muted)
+    } else if let Some(warn) = &ui.warning {
+        (warn.clone(), p.error)
+    } else {
+        (
+            format!(
+                "Reset zoom: {}",
+                format_reset_summary(ui.active_mods(), ui.action)
+            ),
+            p.muted,
+        )
+    };
+    draw_text(g, &hint, 8.8, false, false, color, foot, 1);
 }
 
 enum KeyItem {
@@ -608,13 +874,22 @@ enum KeyItem {
     Mouse,
 }
 
-unsafe fn paint_keycaps(g: *mut c_void, card: RectF, cy: f32, s: f32, ui: &UiState) {
-    let kh = 33.0 * s;
-    let gap = 8.0 * s;
-    let mods = if ui.recording { ui.rec_peak } else { ui.active_mods() };
+unsafe fn paint_keycaps(g: *mut c_void, card: RectF, cy: f32, s: f32, ui: &UiState, p: Palette) {
+    let kh = 34.0 * s;
+    let gap = 6.0 * s;
+    let mods = if ui.recording {
+        ui.rec_peak
+    } else {
+        ui.active_mods()
+    };
 
     let mut items: Vec<(KeyItem, f32)> = Vec::new();
-    let names = [("Ctrl", MOD_CTRL), ("Alt", MOD_ALT), ("Shift", MOD_SHIFT), ("Win", MOD_WIN)];
+    let names = [
+        ("Ctrl", MOD_CTRL),
+        ("Alt", MOD_ALT),
+        ("Shift", MOD_SHIFT),
+        ("Win", MOD_WIN),
+    ];
     let mut first = true;
     for &(name, bit) in &names {
         if (mods & bit) == 0 {
@@ -650,7 +925,9 @@ unsafe fn paint_keycaps(g: *mut c_void, card: RectF, cy: f32, s: f32, ui: &UiSta
     let mut total = 0.0f32;
     for i in 0..items.len() {
         let w = match items[i].0 {
-            KeyItem::Cap(t) | KeyItem::Ghost(t) => (measure_width(g, t, kfont) + 22.0 * s).max(kh * 1.25),
+            KeyItem::Cap(t) | KeyItem::Ghost(t) => {
+                (measure_width(g, t, kfont) + 16.0 * s).max(kh * 1.15)
+            }
             KeyItem::Mouse => kh * 0.58 + kh * 0.14 + kh * 0.24,
             KeyItem::Plus => measure_width(g, "+", pfont) + 4.0 * s,
             KeyItem::Slash => measure_width(g, "/", pfont) + 4.0 * s,
@@ -681,16 +958,68 @@ unsafe fn paint_keycaps(g: *mut c_void, card: RectF, cy: f32, s: f32, ui: &UiSta
     let top = cy - kh * 0.5;
     for (item, w) in items {
         match item {
-            KeyItem::Cap(t) => draw_keycap(g, t, x, top, w, kh, s, false, ui.recording, mods == MOD_SHIFT),
-            KeyItem::Ghost(t) => draw_keycap(g, t, x, top, w, kh, s, true, ui.recording, mods == MOD_SHIFT),
+            KeyItem::Cap(t) => draw_keycap(
+                g,
+                t,
+                x,
+                top,
+                w,
+                kh,
+                s,
+                false,
+                ui.recording,
+                mods == MOD_SHIFT,
+                p,
+            ),
+            KeyItem::Ghost(t) => draw_keycap(
+                g,
+                t,
+                x,
+                top,
+                w,
+                kh,
+                s,
+                true,
+                ui.recording,
+                mods == MOD_SHIFT,
+                p,
+            ),
             KeyItem::Mouse => {
-                draw_mouse(g, x, top + 1.0 * s, kh - 2.0 * s, INK, FOCUS_BLUE);
+                draw_mouse(g, x, top + 1.0 * s, kh - 2.0 * s, p.ink, p.accent);
             }
             KeyItem::Plus => {
-                draw_text(g, "+", 10.5, false, false, MUTED, RectF { x, y: top, w, h: kh }, 1);
+                draw_text(
+                    g,
+                    "+",
+                    10.5,
+                    false,
+                    false,
+                    p.muted,
+                    RectF {
+                        x,
+                        y: top,
+                        w,
+                        h: kh,
+                    },
+                    1,
+                );
             }
             KeyItem::Slash => {
-                draw_text(g, "/", 10.5, false, false, MUTED, RectF { x, y: top, w, h: kh }, 1);
+                draw_text(
+                    g,
+                    "/",
+                    10.5,
+                    false,
+                    false,
+                    p.muted,
+                    RectF {
+                        x,
+                        y: top,
+                        w,
+                        h: kh,
+                    },
+                    1,
+                );
             }
         }
         x += w + gap;
@@ -710,124 +1039,157 @@ unsafe fn draw_keycap(
     ghost: bool,
     recording: bool,
     shift_only: bool,
+    p: Palette,
 ) {
-    let rad = 7.0 * s;
-    let skirt = 3.0 * s;
+    let rect = RectF { x, y, w, h };
     if ghost {
-        let gr = RectF { x, y, w, h };
-        let col = if shift_only { ERROR_RED } else { FOCUS_BLUE };
-        stroke_round(g, gr, rad, col, 1.3, true);
-        draw_text(g, text, 9.5, true, false, col, gr, 1);
+        let col = if shift_only { p.error } else { p.muted };
+        stroke_round(g, rect, 9.0 * s, p.strong, s, true);
+        draw_text(g, text, 9.5, true, false, col, rect, 1);
         return;
     }
-
-    let base_r = RectF { x, y: y + skirt, w, h: h - skirt };
-    let face_r = RectF { x, y, w, h: h - skirt };
-    fill_round(g, base_r, rad, if recording { FOCUS_LINE } else { KEY_SHADOW });
-    fill_round(g, face_r, rad, KEY_FACE);
-    stroke_round(g, face_r, rad, if recording { FOCUS_BLUE } else { LINE }, 1.0, false);
-    draw_text(g, text, 9.5, true, false, if recording { FOCUS_BLUE } else { INK }, face_r, 1);
+    fill_round(g, rect, 9.0 * s, p.bg);
+    stroke_round(
+        g,
+        rect,
+        9.0 * s,
+        if recording { p.accent } else { p.strong },
+        s,
+        false,
+    );
+    draw_text(g, text, 9.5, true, false, p.ink, rect, 1);
 }
 
-unsafe fn paint_seg_track(g: *mut c_void, r: RectF, s: f32, cur: f32, sel: i32, hover: i32) -> (f32, f32) {
-    let track = RectF { x: r.x + 0.5, y: r.y + 0.5, w: r.w - 1.0, h: r.h - 1.0 };
-    fill_round(g, track, 10.0 * s, CARD);
-    stroke_round(g, track, 10.0 * s, LINE, 1.0, false);
-
-    let pad = 4.0 * s;
-    let sw = (r.w - pad * 2.0) * 0.5;
-    if hover >= 0 && hover != sel {
-        let hr = RectF { x: r.x + pad + (hover as f32) * sw, y: r.y + pad, w: sw, h: r.h - pad * 2.0 };
-        fill_round(g, hr, 7.0 * s, SUBTLE);
+unsafe fn paint_seg_track(
+    g: *mut c_void,
+    lay: &Layout,
+    ui: &UiState,
+    r: RectF,
+    control: fn(i32) -> Control,
+    cur: f32,
+    sel: i32,
+    hover: i32,
+    p: Palette,
+) {
+    fill_round(g, r, 11.0 * lay.s, p.sub);
+    for index in 0..2 {
+        paint_control_signal(g, lay, ui, control(index), p);
     }
-    let pill = RectF { x: r.x + pad + cur * sw, y: r.y + pad, w: sw, h: r.h - pad * 2.0 };
-    fill_round(g, pill, 7.0 * s, ACCENT);
-    (pad, sw)
+    if hover >= 0 && hover != sel {
+        fill_round(g, lay.segment(r, hover as f32), 9.0 * lay.s, p.hover);
+    }
+    fill_round(
+        g,
+        lay.segment(r, cur),
+        9.0 * lay.s,
+        p.button(if hover == sel { 0.22 } else { 0.0 }),
+    );
 }
 
-unsafe fn paint_seg_action(g: *mut c_void, lay: &Layout, ui: &UiState) {
+unsafe fn paint_seg_action(g: *mut c_void, lay: &Layout, ui: &UiState, p: Palette) {
     let r = lay.seg_action;
     let s = lay.s;
-    let (pad, sw) = paint_seg_track(g, r, s, ui.action_cur, ui.action, ui.hover_action);
+    paint_seg_track(
+        g, lay, ui, r, Control::Action, ui.action_cur, ui.action, ui.hover_action, p,
+    );
     let items = [("Scroll wheel", true), ("Numpad + / \u{2212}", false)];
     for (i, &(label, is_mouse)) in items.iter().enumerate() {
-        let ir = RectF { x: r.x + pad + (i as f32) * sw, y: r.y + pad, w: sw, h: r.h - pad * 2.0 };
+        let ir = lay.segment(r, i as f32);
         let near = (1.0 - (i as f32 - ui.action_cur).abs()).max(0.0);
-        let fg = mix(INK, ON_ACCENT, near);
-
-        let ih = 17.0 * s;
+        let fg = mix(p.muted, p.on_cta, near);
+        let ih = 16.0 * s;
         let gap = 7.0 * s;
-        let iw = if is_mouse { ih * 0.58 + ih * 0.14 + ih * 0.24 } else { ih * 0.92 };
+        let iw = if is_mouse { ih * 0.96 } else { ih * 0.92 };
         let (fam, font) = make_font(9.2, true, false);
         let tw = measure_width(g, label, font);
-        GdipDeleteFont(font);
-        GdipDeleteFontFamily(fam);
-
-        let total = iw + gap + tw;
-        let sx = ir.x + (ir.w - total) * 0.5;
+        let sx = ir.x + (ir.w - (iw + gap + tw)) * 0.5;
         let iy = ir.y + (ir.h - ih) * 0.5;
         if is_mouse {
             draw_mouse(g, sx, iy, ih, fg, fg);
         } else {
             draw_numpad_icon(g, sx, iy, ih, fg);
         }
+        paint_text(
+            g,
+            label,
+            font,
+            fg,
+            RectF {
+                x: sx + iw + gap,
+                w: tw + 6.0 * s,
+                ..ir
+            },
+            0,
+        );
+        GdipDeleteFont(font);
+        GdipDeleteFontFamily(fam);
+    }
+}
+
+unsafe fn paint_seg_preset(g: *mut c_void, lay: &Layout, ui: &UiState, p: Palette) {
+    let r = lay.seg_preset;
+    paint_seg_track(
+        g, lay, ui, r, Control::Preset, ui.preset_cur, ui.preset(), ui.hover_preset, p,
+    );
+    for (i, &label) in ["Default", "Custom"].iter().enumerate() {
+        let near = (1.0 - (i as f32 - ui.preset_cur).abs()).max(0.0);
         draw_text(
             g,
             label,
-            9.2,
+            9.5,
             true,
             false,
-            fg,
-            RectF { x: sx + iw + gap, y: ir.y, w: tw + 6.0 * s, h: ir.h },
-            0,
+            mix(p.muted, p.on_cta, near),
+            lay.segment(r, i as f32),
+            1,
         );
     }
 }
 
-unsafe fn paint_seg_preset(g: *mut c_void, lay: &Layout, ui: &UiState) {
-    let r = lay.seg_preset;
+unsafe fn paint_toggle_row(
+    g: *mut c_void,
+    lay: &Layout,
+    ui: &UiState,
+    control: Control,
+    label: &str,
+    k: f32,
+    hover: bool,
+    p: Palette,
+) {
     let s = lay.s;
-    let sel = if (ui.use_custom && ui.custom_mods != 0) || ui.recording { 1 } else { 0 };
-    let (pad, sw) = paint_seg_track(g, r, s, ui.preset_cur, sel, ui.hover_preset);
-    for (i, &label) in ["Default", "Custom"].iter().enumerate() {
-        let ir = RectF { x: r.x + pad + (i as f32) * sw, y: r.y + pad, w: sw, h: r.h - pad * 2.0 };
-        let near = (1.0 - (i as f32 - ui.preset_cur).abs()).max(0.0);
-        let fg = mix(INK, ON_ACCENT, near);
-        draw_text(g, label, 9.5, true, false, fg, ir, 1);
-    }
-}
-
-unsafe fn paint_toggle_row(g: *mut c_void, r: RectF, s: f32, label: &str, k: f32, hover: bool) {
+    let r = lay.control_rect(control);
+    let track = lay.button_rect(control);
+    let inset = SETTINGS_INSET * s;
     if hover {
-        fill_round(g, r, 9.0 * s, SUBTLE);
+        fill_round(g, r, BUTTON_RADIUS * s, p.hover);
     }
     draw_text(
         g,
         label,
         9.5,
-        true,
         false,
-        INK,
-        RectF { x: r.x + 6.0 * s, y: r.y, w: r.w - 64.0 * s, h: r.h },
+        false,
+        p.ink,
+        RectF {
+            x: r.x + inset,
+            w: track.x - r.x - 2.0 * inset,
+            ..r
+        },
         0,
     );
 
-    let tw = 44.0 * s;
-    let th = 24.0 * s;
-    let tx = r.x + r.w - tw - 4.0 * s;
-    let ty = r.y + (r.h - th) * 0.5;
-    let tr = RectF { x: tx, y: ty, w: tw, h: th };
-    let track_fill = mix(CARD, ACCENT, k);
-    let track_edge = mix(if hover { LINE_HOVER } else { LINE }, ACCENT, k);
-    fill_round(g, tr, th * 0.5, track_fill);
-    stroke_round(g, tr, th * 0.5, track_edge, 1.0, false);
+    paint_control_signal(g, lay, ui, control, p);
+    let track_fill = mix(p.sub, p.cta, k);
+    let track_edge = mix(p.strong, p.cta, k);
+    fill_round(g, track, BUTTON_RADIUS * s, track_fill);
+    stroke_round(g, track, BUTTON_RADIUS * s, track_edge, 1.0, false);
 
     let inset = 3.0 * s;
-    let d = th - inset * 2.0;
-    let kx = tx + inset + (tw - d - inset * 2.0) * k;
-    let ky = ty + inset;
+    let d = track.h - inset * 2.0;
+    let kx = track.x + inset + (track.w - d - inset * 2.0) * k;
+    let ky = track.y + inset;
     let mut kb = ptr::null_mut();
-    GdipCreateSolidFill(mix(MUTED, ON_ACCENT, k), &mut kb);
+    GdipCreateSolidFill(mix(p.muted, p.on_cta, k), &mut kb);
     GdipFillEllipse(g, kb, kx, ky, d, d);
     GdipDeleteBrush(kb);
 }
