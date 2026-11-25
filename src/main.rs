@@ -1,9 +1,11 @@
 #![windows_subsystem = "windows"]
 
 mod draw;
+mod touchpad;
 mod win32;
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::ptr;
 use std::time::Instant;
 
@@ -32,10 +34,12 @@ const TIMER_ANIM: usize = 2;
 const TIMER_REC: usize = 3;
 const TIMER_WARN: usize = 4;
 const TIMER_SIGNAL: usize = 5;
+const TIMER_PINCH: usize = 6;
 
 const MENU_SETTINGS: usize = 1001;
 const MENU_RESET: usize = 1002;
 const MENU_QUIT: usize = 1003;
+const MENU_PINCH_APP: usize = 1100;
 
 pub struct UiState {
     pub hwnd: HWND,
@@ -59,6 +63,8 @@ pub struct UiState {
     pub anchor_y: i32,
     pub has_anchor: bool,
     pub zoom_timer_on: bool,
+    touchpad: Option<touchpad::Touchpad>,
+    pinch_apps: BTreeSet<String>,
 
     // Recording & warning state
     pub recording: bool,
@@ -118,6 +124,8 @@ impl UiState {
             anchor_y: 0,
             has_anchor: false,
             zoom_timer_on: false,
+            touchpad: touchpad::Touchpad::new(),
+            pinch_apps: BTreeSet::new(),
             recording: false,
             rec_peak: 0,
             rec_ticks: 0,
@@ -271,6 +279,32 @@ unsafe fn sync_zoom_timer(st: &mut UiState) {
     }
 }
 
+unsafe fn queue_pinch(st: &mut UiState, point: Option<POINT>, delta: i32) -> bool {
+    if st.zoom > 1.0 || st.pinch_apps.is_empty() || st.touchpad.is_none() {
+        return false;
+    }
+    let window = point.map_or_else(touchpad::cursor_window, touchpad::window_at);
+    let Some(path) = touchpad::app_path(window) else {
+        return false;
+    };
+    if !st.pinch_apps.contains(&path) {
+        return false;
+    }
+    let touchpad = st.touchpad.as_mut().unwrap();
+    if !touchpad.ready() {
+        return false;
+    }
+    let was_active = touchpad.active();
+    touchpad.queue(window, delta);
+    if !was_active && touchpad.active()
+        && SetTimer(st.hwnd, TIMER_PINCH, touchpad::FRAME_MS, ptr::null()) == 0
+    {
+        touchpad.cancel();
+        return false;
+    }
+    true
+}
+
 unsafe extern "system" fn mouse_hook_proc(n_code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
     let mut handled = false;
     let mut next_hook = 0;
@@ -283,15 +317,20 @@ unsafe extern "system" fn mouse_hook_proc(n_code: i32, w_param: WPARAM, l_param:
             if msg == WM_MOUSEWHEEL && current_mods() == st.hot_mods {
                 let s = &*(l_param as *const MSLLHOOKSTRUCT);
                 let delta = ((s.mouseData >> 16) & 0xFFFF) as i16;
-                let step = 1.1_f64.powf((delta as f64).abs() / 120.0) as f32;
-                st.resetting = false;
-                st.zoom = if delta > 0 {
-                    (st.zoom * step).min(10.0)
-                } else {
-                    (st.zoom / step).max(1.0)
-                };
-                tf = compute_zoom_transform(st);
-                sync_zoom_timer(st);
+                if s.flags & 1 != 0 && st.touchpad.as_ref().is_some_and(touchpad::Touchpad::active) {
+                    return;
+                }
+                if !queue_pinch(st, Some(s.pt), i32::from(delta)) {
+                    let step = 1.1_f64.powf((delta as f64).abs() / 120.0) as f32;
+                    st.resetting = false;
+                    st.zoom = if delta > 0 {
+                        (st.zoom * step).min(10.0)
+                    } else {
+                        (st.zoom / step).max(1.0)
+                    };
+                    tf = compute_zoom_transform(st);
+                    sync_zoom_timer(st);
+                }
                 mask_mods = st.hot_mods;
                 handled = true;
             } else if (msg == WM_MBUTTONDOWN || msg == WM_MBUTTONUP)
@@ -331,6 +370,12 @@ unsafe extern "system" fn kb_hook_proc(n_code: i32, w_param: WPARAM, l_param: LP
             let ours = k.vkCode == VK_ADD || k.vkCode == VK_SUBTRACT || k.vkCode == VK_MULTIPLY;
             if ours && (is_down || is_up) && current_mods() == st.hot_mods {
                 if is_down {
+                    let delta = if k.vkCode == VK_ADD { touchpad::NUMPAD_STEP } else { -touchpad::NUMPAD_STEP };
+                    if k.vkCode != VK_MULTIPLY && queue_pinch(st, None, delta) {
+                        mask_mods = st.hot_mods;
+                        handled = true;
+                        return;
+                    }
                     if k.vkCode == VK_MULTIPLY {
                         st.resetting = true;
                     } else {
@@ -384,6 +429,10 @@ unsafe fn reg_read_dword(subkey: &str, name: &str) -> Option<i32> {
 }
 
 unsafe fn reg_write_dword(subkey: &str, name: &str, value: i32) {
+    reg_write_value(subkey, name, REG_DWORD, &value.to_ne_bytes());
+}
+
+unsafe fn reg_write_value(subkey: &str, name: &str, kind: DWORD, value: &[u8]) {
     let mut hkey: HKEY = 0;
     let sk = wide(subkey);
     if RegCreateKeyExW(
@@ -401,9 +450,42 @@ unsafe fn reg_write_dword(subkey: &str, name: &str, value: i32) {
         return;
     }
     let vn = wide(name);
-    let v = value as u32;
-    RegSetValueExW(hkey, vn.as_ptr(), 0, REG_DWORD, (&v as *const u32) as *const u8, 4);
+    RegSetValueExW(hkey, vn.as_ptr(), 0, kind, value.as_ptr(), value.len() as DWORD);
     RegCloseKey(hkey);
+}
+
+unsafe fn load_pinch_apps() -> BTreeSet<String> {
+    let mut key = 0;
+    let subkey = wide(SETTINGS_KEY);
+    if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut key) != 0 {
+        return BTreeSet::new();
+    }
+    let name = wide("TouchpadApps");
+    let mut kind = 0;
+    let mut size = 0;
+    let status = RegQueryValueExW(key, name.as_ptr(), ptr::null(), &mut kind, ptr::null_mut(), &mut size);
+    let mut apps = BTreeSet::new();
+    if status == 0 && kind == REG_MULTI_SZ && size % 2 == 0 && size <= 4 * 1024 * 1024 {
+        let mut data = vec![0u16; size as usize / 2];
+        let status = RegQueryValueExW(
+            key, name.as_ptr(), ptr::null(), &mut kind, data.as_mut_ptr().cast(), &mut size,
+        );
+        if status == 0 && kind == REG_MULTI_SZ {
+            for path in data[..size as usize / 2].split(|&ch| ch == 0).take_while(|path| !path.is_empty()) {
+                apps.insert(String::from_utf16_lossy(path).to_lowercase());
+            }
+        }
+    }
+    RegCloseKey(key);
+    apps
+}
+
+unsafe fn save_pinch_apps(apps: &BTreeSet<String>) {
+    let data: Vec<u8> = apps.iter().flat_map(|path| path.encode_utf16().chain([0]))
+        .chain([0, 0])
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    reg_write_value(SETTINGS_KEY, "TouchpadApps", REG_MULTI_SZ, &data);
 }
 
 unsafe fn load_settings(st: &mut UiState) {
@@ -419,6 +501,7 @@ unsafe fn load_settings(st: &mut UiState) {
     if let Some(f) = reg_read_dword(SETTINGS_KEY, "FollowMouse") {
         st.follow_mouse = f != 0;
     }
+    st.pinch_apps = load_pinch_apps();
     st.update_active();
 }
 
@@ -595,6 +678,12 @@ unsafe fn reset_all(st: &mut UiState) {
     st.use_custom = false;
     st.custom_mods = 0;
     st.follow_mouse = true;
+    st.pinch_apps.clear();
+    save_pinch_apps(&st.pinch_apps);
+    if let Some(touchpad) = &mut st.touchpad {
+        touchpad.cancel();
+        KillTimer(st.hwnd, TIMER_PINCH);
+    }
     save_settings(st);
     set_startup(true);
     st.startup_on = true;
@@ -660,7 +749,9 @@ unsafe fn step_animations(st: &mut UiState) -> Option<HWND> {
 }
 
 unsafe fn show_tray_menu() {
-    let (hwnd, hot_mods, action) = with_state(|st| (st.hwnd, st.hot_mods, st.action));
+    let (hwnd, hot_mods, action, touchpad_supported, selected) = with_state(|st| {
+        (st.hwnd, st.hot_mods, st.action, st.touchpad.is_some(), st.pinch_apps.clone())
+    });
     let menu = CreatePopupMenu();
     let summary = wide(&format_zoom_summary(hot_mods, action));
     AppendMenuW(menu, MF_STRING | MF_GRAYED | MF_DISABLED, 0, summary.as_ptr());
@@ -670,6 +761,37 @@ unsafe fn show_tray_menu() {
     let s_quit = wide(&format!("Quit {}", APP_NAME));
     AppendMenuW(menu, MF_STRING, MENU_SETTINGS, s_set.as_ptr());
     AppendMenuW(menu, MF_STRING, MENU_RESET, s_rst.as_ptr());
+    let mut app_paths = Vec::new();
+    if touchpad_supported {
+        let apps_menu = CreatePopupMenu();
+        if apps_menu != 0 {
+            let mut apps = touchpad::open_apps(hwnd);
+            apps.extend(selected.iter().cloned());
+            app_paths = apps.into_iter().collect();
+            let name = |path: &str| path.rsplit('\\').next().unwrap_or(path).to_string();
+            app_paths.sort_by_cached_key(|path| (name(path), path.clone()));
+            for (index, path) in app_paths.iter().enumerate() {
+                let app_name = name(path);
+                let duplicate = app_paths.get(index.wrapping_sub(1)).is_some_and(|p| name(p) == app_name)
+                    || app_paths.get(index + 1).is_some_and(|p| name(p) == app_name);
+                let label = if duplicate { path } else { &app_name };
+                let label = wide(&label.replace('&', "&&"));
+                let flags = if selected.contains(path) { MF_CHECKED } else { 0 };
+                AppendMenuW(apps_menu, MF_STRING | flags, MENU_PINCH_APP + index, label.as_ptr());
+            }
+            if app_paths.is_empty() {
+                let label = wide("Open an app to add it");
+                AppendMenuW(apps_menu, MF_STRING | MF_GRAYED, 0, label.as_ptr());
+            }
+            let label = wide("Touchpad pinch apps");
+            if AppendMenuW(menu, MF_POPUP, apps_menu as usize, label.as_ptr()) == 0 {
+                DestroyMenu(apps_menu);
+            }
+        }
+    } else {
+        let label = wide("Touchpad pinch unavailable on this Windows build");
+        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, label.as_ptr());
+    }
     AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
     AppendMenuW(menu, MF_STRING, MENU_QUIT, s_quit.as_ptr());
 
@@ -688,6 +810,13 @@ unsafe fn show_tray_menu() {
         });
     } else if cmd == MENU_QUIT {
         PostQuitMessage(0);
+    } else if let Some(path) = cmd.checked_sub(MENU_PINCH_APP).and_then(|index| app_paths.get(index)) {
+        with_state(|st| {
+            if !st.pinch_apps.remove(path) {
+                st.pinch_apps.insert(path.clone());
+            }
+            save_pinch_apps(&st.pinch_apps);
+        });
     }
 }
 
@@ -973,6 +1102,19 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: UINT, w_param: WPARAM, l_par
             0
         }
         WM_TIMER => {
+            if w_param == TIMER_PINCH {
+                let window = touchpad::cursor_window();
+                with_state(|st| {
+                    if let Some(touchpad) = &mut st.touchpad {
+                        touchpad.tick(window);
+                        if touchpad.active() {
+                            return;
+                        }
+                    }
+                    KillTimer(hwnd, TIMER_PINCH);
+                });
+                return 0;
+            }
             let mut hide_hwnd = None;
             let mut zoom_tf = None;
             with_state(|st| match w_param {

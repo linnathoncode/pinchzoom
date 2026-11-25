@@ -13,6 +13,7 @@ Hold your shortcut keys and scroll to zoom the whole Windows screen around your 
 - **Custom modifiers:** click the shortcut card or pick `Custom` to record any combination of `Ctrl`, `Alt`, `Shift`, and `Win`
 - **Follow mouse:** pans the zoomed view with your cursor when on, or locks the focal point in place when off
 - **Tray app:** runs in the system tray; double-click the icon or launch the exe again to open settings, or pass `--background` to start hidden
+- **Touchpad pinch apps:** on supported Windows 11 builds, open an app and check it under **Touchpad pinch apps** in the tray menu. The zoom shortcut sends a native pinch to the selected app under the pointer. Unchecked apps use desktop zoom. If desktop zoom is already active, reset it before using native pinch. Native pinch depends on the app's gesture support. The reset shortcut and **Follow mouse** apply to desktop zoom.
 
 ## Lightweight by design
 
