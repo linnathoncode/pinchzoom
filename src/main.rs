@@ -339,10 +339,12 @@ unsafe extern "system" fn mouse_hook_proc(n_code: i32, w_param: WPARAM, l_param:
     let mut out = HookOutcome::default();
     try_with_state(|st| {
         out.next_hook = st.mouse_hook;
-        if n_code < 0 || st.action != 0 || current_mods() != st.hot_mods {
+        let msg = w_param as UINT;
+        let ours = msg == WM_MOUSEWHEEL || msg == WM_MBUTTONDOWN || msg == WM_MBUTTONUP;
+        // Cheap checks first: this runs for every mouse move.
+        if n_code < 0 || st.action != 0 || !ours || current_mods() != st.hot_mods {
             return;
         }
-        let msg = w_param as UINT;
         if msg == WM_MOUSEWHEEL {
             let s = &*(l_param as *const MSLLHOOKSTRUCT);
             let delta = ((s.mouseData >> 16) & 0xFFFF) as i16;
