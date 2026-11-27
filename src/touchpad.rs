@@ -64,22 +64,6 @@ struct PointerTypeInfo {
     touch: TouchInfo,
 }
 
-#[link(name = "user32")]
-extern "system" {
-    fn WindowFromPoint(point: POINT) -> HWND;
-    fn GetAncestor(window: HWND, flags: u32) -> HWND;
-    fn EnumWindows(callback: unsafe extern "system" fn(HWND, LPARAM) -> BOOL, data: LPARAM) -> BOOL;
-    fn GetWindowThreadProcessId(window: HWND, process: *mut u32) -> u32;
-    fn GetWindowTextLengthW(window: HWND) -> i32;
-}
-
-#[link(name = "kernel32")]
-extern "system" {
-    fn GetProcAddress(module: HMODULE, name: *const u8) -> *const c_void;
-    fn OpenProcess(access: u32, inherit: BOOL, process: u32) -> HANDLE;
-    fn QueryFullProcessImageNameW(process: HANDLE, flags: u32, path: *mut u16, size: *mut u32) -> BOOL;
-}
-
 type CreateDevice = unsafe extern "system" fn(*const DeviceParams) -> HANDLE;
 type Inject = unsafe extern "system" fn(HANDLE, *const PointerTypeInfo, u32) -> BOOL;
 type DestroyDevice = unsafe extern "system" fn(HANDLE);

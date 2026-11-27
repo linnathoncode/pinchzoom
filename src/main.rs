@@ -305,102 +305,103 @@ unsafe fn queue_pinch(st: &mut UiState, point: Option<POINT>, delta: i32) -> boo
     true
 }
 
+const MAX_ZOOM: f32 = 10.0;
+/** Zoom factor for one numpad +/- press. */
+const KEY_ZOOM_STEP: f32 = 1.05;
+
+/// Zooms in or out by `step`, clamped to 1x..MAX_ZOOM, and cancels a reset in progress.
+fn zoom_by(st: &mut UiState, zoom_in: bool, step: f32) {
+    st.resetting = false;
+    st.zoom = if zoom_in { (st.zoom * step).min(MAX_ZOOM) } else { (st.zoom / step).max(1.0) };
+}
+
+/// What a hook decided while it held the UI state. The side effects run after the
+/// state borrow is released, because they can re-enter the window proc.
+#[derive(Default)]
+struct HookOutcome {
+    handled: bool,
+    next_hook: HHOOK,
+    tf: Option<(f32, i32, i32)>,
+    mask_mods: i32,
+}
+
+unsafe fn finish_hook(out: HookOutcome, n_code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
+    if out.tf.is_some() {
+        apply_transform(out.tf);
+    }
+    if out.mask_mods != 0 {
+        mask_key(out.mask_mods);
+    }
+    if out.handled { 1 } else { CallNextHookEx(out.next_hook, n_code, w_param, l_param) }
+}
+
 unsafe extern "system" fn mouse_hook_proc(n_code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
-    let mut handled = false;
-    let mut next_hook = 0;
-    let mut tf = None;
-    let mut mask_mods = 0;
+    let mut out = HookOutcome::default();
     try_with_state(|st| {
-        next_hook = st.mouse_hook;
-        if n_code >= 0 && st.action == 0 {
-            let msg = w_param as UINT;
-            if msg == WM_MOUSEWHEEL && current_mods() == st.hot_mods {
-                let s = &*(l_param as *const MSLLHOOKSTRUCT);
-                let delta = ((s.mouseData >> 16) & 0xFFFF) as i16;
-                if s.flags & 1 != 0 && st.touchpad.as_ref().is_some_and(touchpad::Touchpad::active) {
-                    return;
-                }
-                if !queue_pinch(st, Some(s.pt), i32::from(delta)) {
-                    let step = 1.1_f64.powf((delta as f64).abs() / 120.0) as f32;
-                    st.resetting = false;
-                    st.zoom = if delta > 0 {
-                        (st.zoom * step).min(10.0)
-                    } else {
-                        (st.zoom / step).max(1.0)
-                    };
-                    tf = compute_zoom_transform(st);
-                    sync_zoom_timer(st);
-                }
-                mask_mods = st.hot_mods;
-                handled = true;
-            } else if (msg == WM_MBUTTONDOWN || msg == WM_MBUTTONUP)
-                && current_mods() == st.hot_mods
-                && st.zoom > 1.0
-            {
-                if msg == WM_MBUTTONDOWN {
-                    st.resetting = true;
-                    sync_zoom_timer(st);
-                    mask_mods = st.hot_mods;
-                }
-                handled = true;
+        out.next_hook = st.mouse_hook;
+        if n_code < 0 || st.action != 0 || current_mods() != st.hot_mods {
+            return;
+        }
+        let msg = w_param as UINT;
+        if msg == WM_MOUSEWHEEL {
+            let s = &*(l_param as *const MSLLHOOKSTRUCT);
+            let delta = ((s.mouseData >> 16) & 0xFFFF) as i16;
+            if s.flags & 1 != 0 && st.touchpad.as_ref().is_some_and(touchpad::Touchpad::active) {
+                return;
             }
+            if !queue_pinch(st, Some(s.pt), i32::from(delta)) {
+                let step = 1.1_f64.powf((delta as f64).abs() / 120.0) as f32;
+                zoom_by(st, delta > 0, step);
+                out.tf = compute_zoom_transform(st);
+                sync_zoom_timer(st);
+            }
+            out.mask_mods = st.hot_mods;
+            out.handled = true;
+        } else if (msg == WM_MBUTTONDOWN || msg == WM_MBUTTONUP) && st.zoom > 1.0 {
+            if msg == WM_MBUTTONDOWN {
+                st.resetting = true;
+                sync_zoom_timer(st);
+                out.mask_mods = st.hot_mods;
+            }
+            out.handled = true;
         }
     });
-    if tf.is_some() {
-        apply_transform(tf);
-    }
-    if mask_mods != 0 {
-        mask_key(mask_mods);
-    }
-    if handled { 1 } else { CallNextHookEx(next_hook, n_code, w_param, l_param) }
+    finish_hook(out, n_code, w_param, l_param)
 }
 
 unsafe extern "system" fn kb_hook_proc(n_code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
-    let mut handled = false;
-    let mut next_hook = 0;
-    let mut tf = None;
-    let mut mask_mods = 0;
+    let mut out = HookOutcome::default();
     try_with_state(|st| {
-        next_hook = st.kb_hook;
-        if n_code >= 0 && st.action == 1 {
-            let k = &*(l_param as *const KBDLLHOOKSTRUCT);
-            let msg = w_param as UINT;
-            let is_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
-            let is_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
-            let ours = k.vkCode == VK_ADD || k.vkCode == VK_SUBTRACT || k.vkCode == VK_MULTIPLY;
-            if ours && (is_down || is_up) && current_mods() == st.hot_mods {
-                if is_down {
-                    let delta = if k.vkCode == VK_ADD { touchpad::NUMPAD_STEP } else { -touchpad::NUMPAD_STEP };
-                    if k.vkCode != VK_MULTIPLY && queue_pinch(st, None, delta) {
-                        mask_mods = st.hot_mods;
-                        handled = true;
-                        return;
-                    }
-                    if k.vkCode == VK_MULTIPLY {
-                        st.resetting = true;
-                    } else {
-                        st.resetting = false;
-                        if k.vkCode == VK_ADD {
-                            st.zoom = (st.zoom * 1.05).min(10.0);
-                        } else {
-                            st.zoom = (st.zoom / 1.05).max(1.0);
-                        }
-                    }
-                    tf = compute_zoom_transform(st);
-                    sync_zoom_timer(st);
-                    mask_mods = st.hot_mods;
-                }
-                handled = true;
-            }
+        out.next_hook = st.kb_hook;
+        if n_code < 0 || st.action != 1 {
+            return;
         }
+        let k = &*(l_param as *const KBDLLHOOKSTRUCT);
+        let msg = w_param as UINT;
+        let is_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+        let is_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
+        let ours = k.vkCode == VK_ADD || k.vkCode == VK_SUBTRACT || k.vkCode == VK_MULTIPLY;
+        if !ours || !(is_down || is_up) || current_mods() != st.hot_mods {
+            return;
+        }
+        out.handled = true;
+        if !is_down {
+            return;
+        }
+        out.mask_mods = st.hot_mods;
+        let delta = if k.vkCode == VK_ADD { touchpad::NUMPAD_STEP } else { -touchpad::NUMPAD_STEP };
+        if k.vkCode != VK_MULTIPLY && queue_pinch(st, None, delta) {
+            return;
+        }
+        if k.vkCode == VK_MULTIPLY {
+            st.resetting = true;
+        } else {
+            zoom_by(st, k.vkCode == VK_ADD, KEY_ZOOM_STEP);
+        }
+        out.tf = compute_zoom_transform(st);
+        sync_zoom_timer(st);
     });
-    if tf.is_some() {
-        apply_transform(tf);
-    }
-    if mask_mods != 0 {
-        mask_key(mask_mods);
-    }
-    if handled { 1 } else { CallNextHookEx(next_hook, n_code, w_param, l_param) }
+    finish_hook(out, n_code, w_param, l_param)
 }
 
 // ---------- registry storage ----------

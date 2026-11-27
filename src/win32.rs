@@ -301,6 +301,12 @@ extern "system" {
     pub fn DestroyMenu(hMenu: HMENU) -> BOOL;
     pub fn MessageBoxW(hwnd: HWND, text: *const u16, caption: *const u16, uType: UINT) -> i32;
     pub fn RegisterWindowMessageW(lpString: *const u16) -> UINT;
+    // Window lookup for per-app touchpad pinch (touchpad.rs).
+    pub fn WindowFromPoint(point: POINT) -> HWND;
+    pub fn GetAncestor(window: HWND, flags: u32) -> HWND;
+    pub fn EnumWindows(callback: unsafe extern "system" fn(HWND, LPARAM) -> BOOL, data: LPARAM) -> BOOL;
+    pub fn GetWindowThreadProcessId(window: HWND, process: *mut u32) -> u32;
+    pub fn GetWindowTextLengthW(window: HWND) -> i32;
 }
 
 #[link(name = "kernel32")]
@@ -311,6 +317,9 @@ extern "system" {
     pub fn GetLastError() -> DWORD;
     pub fn CloseHandle(hObject: HANDLE) -> BOOL;
     pub fn Sleep(dwMilliseconds: DWORD);
+    pub fn GetProcAddress(module: HMODULE, name: *const u8) -> *const c_void;
+    pub fn OpenProcess(access: u32, inherit: BOOL, process: u32) -> HANDLE;
+    pub fn QueryFullProcessImageNameW(process: HANDLE, flags: u32, path: *mut u16, size: *mut u32) -> BOOL;
 }
 
 #[link(name = "gdi32")]
