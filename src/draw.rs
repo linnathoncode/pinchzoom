@@ -2,7 +2,8 @@ use std::ffi::c_void;
 use std::ptr;
 
 use crate::win32::*;
-use crate::{format_reset_summary, UiState, MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN};
+use crate::hotkeys::{format_reset_summary, MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN};
+use crate::state::UiState;
 
 #[derive(Clone, Copy)]
 pub struct Palette {
